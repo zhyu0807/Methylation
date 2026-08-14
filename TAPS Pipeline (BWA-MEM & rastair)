@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REF="/path/to/reference/genome.fa"
+SAMPLE="Sample_TAPS_Level3_Rep1"
+R1="project/fastq/${SAMPLE}_R1.fq.gz"
+R2="project/fastq/${SAMPLE}_R2.fq.gz"
+THREADS=8
+
+mkdir -p project/work_taps/01_align project/work_taps/02_bam project/work_taps/03_meth project/work_taps/99_logs
+
+# 1. Alignment and Sorting
+bwa mem -t ${THREADS}${REF} ${R1}${R2} \
+  2> project/work_taps/99_logs/${SAMPLE}.bwa.log \
+| samtools sort -@ ${THREADS} -o project/work_taps/02_bam/${SAMPLE}.sorted.bam -
+
+samtools index project/work_taps/02_bam/${SAMPLE}.sorted.bam
+
+# 2. Mark Duplicates
+picard MarkDuplicates \
+  I=project/work_taps/02_bam/${SAMPLE}.sorted.bam \
+  O=project/work_taps/02_bam/${SAMPLE}.dedup.bam \
+  M=project/work_taps/02_bam/${SAMPLE}.dup_metrics.txt \
+  VALIDATION_STRINGENCY=SILENT \
+  2>&1 | tee project/work_taps/99_logs/${SAMPLE}.picard_markdup.log
+
+samtools index project/work_taps/02_bam/${SAMPLE}.dedup.bam
+
+# 3. Filter Low-quality/Supplementary Reads (MAPQ >= 20)
+samtools view -@ 4 -b -q 20 -F 0x904 \
+  project/work_taps/02_bam/${SAMPLE}.dedup.bam \
+  > project/work_taps/02_bam/${SAMPLE}.dedup.q20.bam
+
+samtools index project/work_taps/02_bam/${SAMPLE}.dedup.q20.bam
+
+# 4. rastair CpG-level Calling
+BAM="project/work_taps/02_bam/${SAMPLE}.dedup.q20.bam"
+
+# Per-read BED
+rastair per-read -@ ${THREADS} \
+  --fasta-file ${REF} \
+  --bed project/work_taps/03_meth/${SAMPLE}.perread.bed.gz \
+  ${BAM}
+tabix -p bed project/work_taps/03_meth/${SAMPLE}.perread.bed.gz
+
+# Single-CpG Calling
+rastair call -@ 12 \
+  --fasta-file ${REF} \
+  --nOT "0,0,0,0" --nOB "0,0,0,0" \
+  ${BAM} \
+| bgzip -c > project/work_taps/03_meth/${SAMPLE}.cpg.bed.gz
+
+tabix -p bed project/work_taps/03_meth/${SAMPLE}.cpg.bed.gz
