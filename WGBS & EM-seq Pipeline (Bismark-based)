@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Define variables
+GENOME_DIR="/path/to/reference_genome"
+SAMPLE="Sample_Level3_Rep1"
+R1="project/fastq/${SAMPLE}_R1.fq.gz"
+R2="project/fastq/${SAMPLE}_R2.fq.gz"
+THREADS=8
+
+mkdir -p project/01_align project/02_bam project/03_meth/${SAMPLE} project/tmp project/99_logs
+
+# 1. Prepare Bismark Genome Index (Run once)
+# bismark_genome_preparation --bowtie2 ${GENOME_DIR}
+
+# 2. Alignment
+bismark ${GENOME_DIR} \
+  -1 ${R1} -2${R2} \
+  -o project/01_align \
+  --temp_dir project/tmp \
+  --parallel 4 -p 4 \
+  -q -X 1000 \
+  2> project/99_logs/${SAMPLE}.bismark.align.log
+
+# 3. Name-sort and Deduplicate
+IN_BAM="project/01_align/${SAMPLE}_R1_bismark_bt2_pe.bam"
+NAME_SORT_BAM="project/02_bam/${SAMPLE}.name_sorted.bam"
+
+samtools sort -n -@ ${THREADS} -o ${NAME_SORT_BAM}${IN_BAM}
+
+deduplicate_bismark --paired \
+  --bam ${NAME_SORT_BAM} \
+  --output_dir project/02_bam \
+  --outfile ${SAMPLE}.deduplicated \
+  2> project/99_logs/${SAMPLE}.dedup.log
+
+# 4. Extract Methylation Calls
+DEDUP_BAM="project/02_bam/${SAMPLE}.deduplicated.bam"
+OUT_DIR="project/03_meth/${SAMPLE}"
+
+bismark_methylation_extractor \
+  -p --gzip --parallel 8 \
+  --bedGraph --counts --cutoff 1 \
+  --comprehensive \
+  --no_overlap \
+  --ignore 4 --ignore_r2 10 \
+  --ignore_3prime 0 --ignore_3prime_r2 2 \
+  --cytosine_report \
+  --genome_folder ${GENOME_DIR} \
+  -o ${OUT_DIR} \${DEDUP_BAM} \
+  2> project/99_logs/${SAMPLE}.meth_extract.log
+
+# 5. (Optional) Merge CpGs
+COV_GZ="${OUT_DIR}/${SAMPLE}.deduplicated.bismark.cov.gz"
+coverage2cytosine --merge_CpG --gzip \
+  --genome_folder ${GENOME_DIR} \
+  --output ${OUT_DIR}/${SAMPLE}.merged_CpG.txt.gz \
+  ${COV_GZ} \
+  2> project/99_logs/${SAMPLE}.coverage2cytosine.log
