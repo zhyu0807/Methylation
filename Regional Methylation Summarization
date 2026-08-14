@@ -1,0 +1,16 @@
+Calculates the average methylation ratio across designated target amplicon/promoter regions using bedtools:
+FRAG="project/fragments.bed"
+FRAG_SORT="project/04_region_summary/fragments.sorted.bed"
+mkdir -p project/04_region_summary
+
+bedtools sort -i ${FRAG} >${FRAG_SORT}
+
+# For WGBS / EM-seq (Bismark coverage format: chr start end methyl% count_methyl count_unmethyl)
+zcat ${OUT_DIR}/${SAMPLE}.deduplicated.bismark.cov.gz > ${OUT_DIR}/${SAMPLE}.cov
+bedtools map -a ${FRAG_SORT} -b ${OUT_DIR}/${SAMPLE}.cov -c 4 -o mean \
+  > project/04_region_summary/${SAMPLE}.fragment_mean_methylation.txt
+
+# For TAPS (Adjust -c according to the methylation ratio column)
+CPG_BED_GZ="project/work_taps/03_meth/${SAMPLE}.cpg.bed.gz"
+bedtools map -a ${FRAG_SORT} -b <(zcat${CPG_BED_GZ}) -c 4 -o mean \
+  > project/04_region_summary/${SAMPLE}_taps.fragment_mean_methylation.txt
